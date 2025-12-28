@@ -121,21 +121,22 @@ class FastTracer:
             if not self.classes:
                 print('[DEBUG] Warning: No class matches found; raw_classes preview: {0}'.format(raw_classes[:300].replace('\n', ' ')))
 
-    def fetch_remote_via_snmp(self, host, community='public', version='2c', timeout=10):
+    def fetch_remote_via_snmp(self, host, community='public', version='2c', timeout=30):
         """Use local `snmpwalk` to query a remote EOS device and populate caches.
 
-        Requires `snmpwalk` available in PATH. Uses MIB names (entPhysicalName, etc.).
+        Requires `snmpwalk` available in PATH. Uses numeric OIDs (ENTITY-MIB).
         """
         if self.debug:
             print('[DEBUG] Fetching SNMP data from {0} (community={1}, version={2})'.format(host, community, version))
 
         proto = '-v2c' if version == '2c' else '-v1'
         base_cmd = ['snmpwalk', proto, '-c', community, host]
+        # Use numeric OIDs for ENTITY-MIB (more reliable than MIB names)
         oids = {
-            'names': 'entPhysicalName',
-            'classes': 'entPhysicalClass',
-            'parents': 'entPhysicalContainedIn',
-            'relpos': 'entPhysicalParentRelPos'
+            'names': '1.3.6.1.2.1.47.1.1.1.1.7',      # entPhysicalName
+            'classes': '1.3.6.1.2.1.47.1.1.1.1.5',    # entPhysicalClass
+            'parents': '1.3.6.1.2.1.47.1.1.1.1.4',    # entPhysicalContainedIn
+            'relpos': '1.3.6.1.2.1.47.1.1.1.1.6'      # entPhysicalParentRelPos
         }
 
         outputs = {}
@@ -156,8 +157,11 @@ class FastTracer:
                 if self.debug:
                     print('[DEBUG] snmpwalk oid={0} returncode={1} output_len={2}'.format(oid, ret, len(text)))
                     if err_text:
-                        print('[DEBUG] snmpwalk stderr (truncated): {0}'.format(err_text[:200].replace('\n',' ')))
-                    print('[DEBUG] snmpwalk stdout preview: {0}'.format(text[:200].replace('\n',' ')))
+                        print('[DEBUG] snmpwalk stderr: {0}'.format(err_text))
+                    if text:
+                        print('[DEBUG] snmpwalk stdout output:\n{0}'.format(text))
+                    else:
+                        print('[DEBUG] snmpwalk stdout: (empty)')
             except FileNotFoundError:
                 print('❌ Error: `snmpwalk` not found in PATH. Install net-snmp client tools.')
                 return False
@@ -368,6 +372,7 @@ AUTHOR:
     parser.add_argument("-s", "--snmp-host", help="Remote EOS host to query via SNMP (when not on-device).")
     parser.add_argument("-c", "--snmp-community", default="public", help="SNMP community string (default: public).")
     parser.add_argument("-v", "--snmp-version", choices=['1','2c'], default='2c', help="SNMP version (default: 2c).")
+    parser.add_argument("-t", "--snmp-timeout", type=int, default=60, help="SNMP query timeout in seconds (default: 60).")
     parser.add_argument("-V", "--version", action="version", version="%(prog)s 1.0", help="Show program version and exit.")
 
     args = parser.parse_args()
@@ -379,7 +384,7 @@ AUTHOR:
             print("❌ Error: Not on Arista EOS. Provide --snmp-host to fetch SNMP data from a remote EOS device.")
             sys.exit(2)
 
-        ok = tracer.fetch_remote_via_snmp(args.snmp_host, community=args.snmp_community, version=args.snmp_version)
+        ok = tracer.fetch_remote_via_snmp(args.snmp_host, community=args.snmp_community, version=args.snmp_version, timeout=args.snmp_timeout)
         if not ok:
             print("❌ Error: Failed to fetch SNMP data from {0}".format(args.snmp_host))
             sys.exit(3)
