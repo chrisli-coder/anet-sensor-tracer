@@ -20,6 +20,8 @@ class FastTracer:
         self.parents = {}    
         self.relpos = {}     
 
+
+
     def run_bulk_walk(self, mib_node):
         cmd = "show snmp mib walk " + mib_node
         if self.debug:
@@ -360,12 +362,13 @@ AUTHOR:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=usage_epilog
     )
-    parser.add_argument("index", nargs='?', help="Physical Index to trace.")
-    parser.add_argument("-a", "--all", action="store_true", help="Bulk map all sensors to Module ID.")
+    parser.add_argument("index", nargs='?', help="Physical index to trace.")
+    parser.add_argument("-a", "--all", action="store_true", help="Bulk map all sensors to module ID.")
     parser.add_argument("-d", "--debug", action="store_true", help="Show raw CLI execution and parse counts.")
-    parser.add_argument("--snmp-host", help="Remote EOS host to query via SNMP when not running on-device.")
-    parser.add_argument("--snmp-community", default="public", help="SNMP community string for remote queries (default: public).")
-    parser.add_argument("--snmp-version", choices=['1','2c'], default='2c', help="SNMP version to use for remote queries (default: 2c).")
+    parser.add_argument("-s", "--snmp-host", help="Remote EOS host to query via SNMP (when not on-device).")
+    parser.add_argument("-c", "--snmp-community", default="public", help="SNMP community string (default: public).")
+    parser.add_argument("-v", "--snmp-version", choices=['1','2c'], default='2c', help="SNMP version (default: 2c).")
+    parser.add_argument("-V", "--version", action="version", version="%(prog)s 1.0", help="Show program version and exit.")
 
     args = parser.parse_args()
     tracer = FastTracer(debug=args.debug)
