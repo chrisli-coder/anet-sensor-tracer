@@ -30,16 +30,30 @@ class FastTracer:
             process = subprocess.Popen(['FastCli', '-p', '15', '-c', cmd],
                                        stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE)
-            stdout, stderr = process.communicate()
-            decoded = stdout.decode('utf-8', errors='ignore')
+            
+            output_lines = []
+            
+            # Read stdout line by line
+            if process.stdout:
+                for line_bytes in process.stdout:
+                    line_str = line_bytes.decode('utf-8', errors='ignore')
+                    if self.debug:
+                        sys.stdout.write(line_str)
+                        sys.stdout.flush()
+                    output_lines.append(line_str)
+            
+            # Wait for process and capture stderr
+            _, stderr = process.communicate()
+            
+            decoded = "".join(output_lines)
             err_decoded = stderr.decode('utf-8', errors='ignore')
+
             if self.debug:
-                print("[DEBUG] FastCli cmd: {0}".format(cmd))
+                print("\n[DEBUG] FastCli cmd: {0}".format(cmd))
                 print("[DEBUG] FastCli returncode: {0}".format(process.returncode))
                 if err_decoded:
                     print("[DEBUG] FastCli stderr (truncated): {0}".format(err_decoded[:200].replace('\n', ' ')))
                 print("[DEBUG] Received {0} characters from {1}".format(len(decoded), mib_node))
-                print("[DEBUG] FastCli stdout preview: {0}".format(decoded[:200].replace('\n', ' ')))
             return decoded
         except Exception as e:
             if self.debug: print("[DEBUG] CLI Execution Error: " + str(e))
@@ -49,7 +63,7 @@ class FastTracer:
         """Populates RAM cache and shortens Chassis names"""
         # 1. Names
         raw_names = self.run_bulk_walk("entPhysicalName")
-        matches = re.findall(r"entPhysicalName(?:\[|\.)(\d+)(?:\]|\s+).*?STRING:\s*(.*)", raw_names)
+        matches = re.findall(r"(?:entPhysicalName|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.7)(?:\[|\.)(\d+)(?:\]|\s+).*?STRING:\s*(.*)", raw_names)
         for idx, val in matches:
             name = val.strip('" \r\n')
             if "Switch Chassis." in name:
@@ -58,19 +72,19 @@ class FastTracer:
 
         # 2. Classes
         raw_classes = self.run_bulk_walk("entPhysicalClass")
-        matches = re.findall(r"entPhysicalClass(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*.*?\(?(\d+)\)?", raw_classes)
+        matches = re.findall(r"(?:entPhysicalClass|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.5)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*.*?\(?(\d+)\)?", raw_classes)
         for idx, val in matches:
             self.classes[idx] = val
 
         # 3. Containment
         raw_parents = self.run_bulk_walk("entPhysicalContainedIn")
-        matches = re.findall(r"entPhysicalContainedIn(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(\d+)", raw_parents)
+        matches = re.findall(r"(?:entPhysicalContainedIn|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.4)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(\d+)", raw_parents)
         for idx, val in matches:
             self.parents[idx] = val
 
         # 4. Relative Position
         raw_relpos = self.run_bulk_walk("entPhysicalParentRelPos")
-        matches = re.findall(r"entPhysicalParentRelPos(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(-?\d+)", raw_relpos)
+        matches = re.findall(r"(?:entPhysicalParentRelPos|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.6)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(-?\d+)", raw_relpos)
         for idx, val in matches:
             self.relpos[idx] = val
 
@@ -88,22 +102,29 @@ class FastTracer:
         self.classes = {}
         self.parents = {}
         self.relpos = {}
-        name_matches = re.findall(r"entPhysicalName(?:\[|\.)(\d+)(?:\]|\s+).*?STRING:\s*(.*)", raw_names)
+        # Helper regex to match either "Name" or ".1.3.6...7" or "SNMPv2-SMI::mib-2...7"
+        # We expect: (prefix)(index) = (type): (value)
+        
+        # 1. Names (.7)
+        name_matches = re.findall(r"(?:entPhysicalName|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.7)(?:\[|\.)(\d+)(?:\]|\s+).*?STRING:\s*(.*)", raw_names)
         for idx, val in name_matches:
             name = val.strip('" \r\n')
             if "Switch Chassis." in name:
                 name = "Switch Chassis"
             self.names[idx] = name
 
-        class_matches = re.findall(r"entPhysicalClass(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*.*?\(?(\d+)\)?", raw_classes)
+        # 2. Classes (.5)
+        class_matches = re.findall(r"(?:entPhysicalClass|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.5)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*.*?\(?(\d+)\)?", raw_classes)
         for idx, val in class_matches:
             self.classes[idx] = val
 
-        parent_matches = re.findall(r"entPhysicalContainedIn(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(\d+)", raw_parents)
+        # 3. Parents (.4)
+        parent_matches = re.findall(r"(?:entPhysicalContainedIn|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.4)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(\d+)", raw_parents)
         for idx, val in parent_matches:
             self.parents[idx] = val
 
-        relpos_matches = re.findall(r"entPhysicalParentRelPos(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(-?\d+)", raw_relpos)
+        # 4. RelPos (.6)
+        relpos_matches = re.findall(r"(?:entPhysicalParentRelPos|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.6)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(-?\d+)", raw_relpos)
         for idx, val in relpos_matches:
             self.relpos[idx] = val
 
@@ -130,7 +151,9 @@ class FastTracer:
             print('[DEBUG] Fetching SNMP data from {0} (community={1}, version={2})'.format(host, community, version))
 
         proto = '-v2c' if version == '2c' else '-v1'
-        base_cmd = ['snmpwalk', proto, '-c', community, host]
+        # -On forces numeric OIDs, avoiding MIB parsing issues
+        # -t 5 sets timeout to 5 seconds per packet (default is 1s, often too short)
+        base_cmd = ['snmpwalk', '-On', '-t', '5', proto, '-c', community, host]
         # Use numeric OIDs for ENTITY-MIB (more reliable than MIB names)
         oids = {
             'names': '1.3.6.1.2.1.47.1.1.1.1.7',      # entPhysicalName
@@ -146,22 +169,33 @@ class FastTracer:
                 if self.debug:
                     print('[DEBUG] running: {0}'.format(' '.join(cmd)))
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                out, err = proc.communicate(timeout=timeout)
+                
+                output_lines = []
+                if proc.stdout:
+                    for line_bytes in proc.stdout:
+                        line_str = line_bytes.decode('utf-8', errors='ignore')
+                        if self.debug:
+                            sys.stdout.write(line_str)
+                            sys.stdout.flush()
+                        output_lines.append(line_str)
+                
+                # Wait for completion and capture stderr
+                # Note: We rely on the external tool to timeout or the user to interrupt if it hangs too long,
+                # as strictly streaming with a python-side timeout is complex without threading.
+                _, err = proc.communicate() 
                 ret = proc.returncode
-                text = out.decode('utf-8', errors='ignore')
+                
+                text = "".join(output_lines)
                 err_text = err.decode('utf-8', errors='ignore')
+                
                 if not text:
                     # sometimes snmpwalk writes useful info to stderr
                     text = err_text
                 outputs[key] = text
                 if self.debug:
-                    print('[DEBUG] snmpwalk oid={0} returncode={1} output_len={2}'.format(oid, ret, len(text)))
+                    print('\n[DEBUG] snmpwalk oid={0} returncode={1} output_len={2}'.format(oid, ret, len(text)))
                     if err_text:
                         print('[DEBUG] snmpwalk stderr: {0}'.format(err_text))
-                    if text:
-                        print('[DEBUG] snmpwalk stdout output:\n{0}'.format(text))
-                    else:
-                        print('[DEBUG] snmpwalk stdout: (empty)')
             except FileNotFoundError:
                 print('❌ Error: `snmpwalk` not found in PATH. Install net-snmp client tools.')
                 return False
@@ -290,8 +324,11 @@ class FastTracer:
         print("=" * line_width + "\n")
 
     def dump_sensors(self):
-        print("\n[Loading] Bulk walking MIB into RAM cache...")
-        self.parse_bulk_data()
+        if not self.names:
+            print("\n[Loading] Bulk walking MIB into RAM cache...")
+            self.parse_bulk_data()
+        else:
+            if self.debug: print("[Info] Using existing RAM cache (Remote/Pre-loaded)...")
         
         sensor_indices = [idx for idx, cls in self.classes.items() if cls in ['7', '8']]
 
@@ -310,8 +347,11 @@ class FastTracer:
         self.print_table(rows)
 
     def trace_single(self, index):
-        print("\n[Loading] Bulk walking MIB into RAM cache...")
-        self.parse_bulk_data()
+        if not self.names:
+            print("\n[Loading] Bulk walking MIB into RAM cache...")
+            self.parse_bulk_data()
+        else:
+            if self.debug: print("[Info] Using existing RAM cache (Remote/Pre-loaded)...")
         
         if index not in self.names:
             print("❌ Index {0} not found in MIB.".format(index))
