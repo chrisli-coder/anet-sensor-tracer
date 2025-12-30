@@ -714,7 +714,7 @@ AUTHOR:
     parser.add_argument(
         "-V", "--version", 
         action="version", 
-        version="%(prog)s 1.0", 
+        version="%(prog)s 2.0", 
         help="Show program version and exit."
     )
     return parser
