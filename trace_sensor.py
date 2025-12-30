@@ -1,8 +1,3 @@
-import subprocess
-import re
-import sys
-import argparse
-
 """
 Arista EOS Sensor Tracer (Ultra-Fast)
 --------------------------------------------
@@ -12,361 +7,117 @@ Author: chris.li@arista.com
 Features: RAM Caching, Input Validation, Algo Description, Memory Cleanup.
 """
 
+import subprocess
+import re
+import sys
+import argparse
+from typing import Dict, Optional, Tuple, List
+
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+# SNMP OIDs for ENTITY-MIB
+ENTITY_MIB_OIDS = {
+    'names': '1.3.6.1.2.1.47.1.1.1.1.7',      # entPhysicalName
+    'classes': '1.3.6.1.2.1.47.1.1.1.1.5',    # entPhysicalClass
+    'parents': '1.3.6.1.2.1.47.1.1.1.1.4',    # entPhysicalContainedIn
+    'relpos': '1.3.6.1.2.1.47.1.1.1.1.6'      # entPhysicalParentRelPos
+}
+
+# MIB node names for FastCli commands
+MIB_NODES = {
+    'names': 'entPhysicalName',
+    'classes': 'entPhysicalClass',
+    'parents': 'entPhysicalContainedIn',
+    'relpos': 'entPhysicalParentRelPos'
+}
+
+# Sensor class IDs (entPhysicalClass values)
+SENSOR_CLASSES = ['7', '8']  # fan(7) and sensor(8)
+
+# Physical class IDs that indicate terminal modules
+TERMINAL_CLASSES = ['1', '6', '9']  # other(1), powerSupply(6), container(9)
+
+# Table formatting constants
+TABLE_COLUMNS = {
+    'index': 15,
+    'sensor_name': 55,
+    'module_type': 60,
+    'module_id': 0  # Variable width
+}
+TABLE_WIDTH = 155
+
+# SNMP configuration defaults
+SNMP_DEFAULTS = {
+    'community': 'public',
+    'version': '2c',
+    'timeout': 60,
+    'packet_timeout': 5
+}
+
+# Maximum depth for parent traversal
+MAX_PARENT_DEPTH = 15
+
+
+# ============================================================================
+# Regex Patterns
+# ============================================================================
+
+def _compile_regex_patterns():
+    """Compile regex patterns for parsing SNMP output."""
+    # Base pattern components
+    oid_base = r"(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1"
+    index_pattern = r"(?:\[|\.)(\d+)(?:\]|\s+)"
+    
+    return {
+        'name': re.compile(
+            r"(?:entPhysicalName|" + oid_base + r"\.7)" + index_pattern + r".*?STRING:\s*(.*)"
+        ),
+        'class': re.compile(
+            r"(?:entPhysicalClass|" + oid_base + r"\.5)" + index_pattern + r".*?INTEGER:\s*.*?\(?(\d+)\)?"
+        ),
+        'parent': re.compile(
+            r"(?:entPhysicalContainedIn|" + oid_base + r"\.4)" + index_pattern + r".*?INTEGER:\s*(\d+)"
+        ),
+        'relpos': re.compile(
+            r"(?:entPhysicalParentRelPos|" + oid_base + r"\.6)" + index_pattern + r".*?INTEGER:\s*(-?\d+)"
+        )
+    }
+
+
+# ============================================================================
+# FastTracer Class
+# ============================================================================
+
 class FastTracer:
-    def __init__(self, debug=False):
+    """
+    High-speed Arista EOS Sensor Tracer.
+    
+    Traces sensor indices to their parent modules using SNMP ENTITY-MIB data.
+    Supports both on-device (FastCli) and remote (snmpwalk) data fetching.
+    """
+    
+    # Compiled regex patterns (class-level for efficiency)
+    _regex_patterns = _compile_regex_patterns()
+    
+    def __init__(self, debug: bool = False):
+        """Initialize the tracer with empty caches."""
         self.debug = debug
-        self.names = {}      
-        self.classes = {}    
-        self.parents = {}    
-        self.relpos = {}     
-
-
-
-    def run_bulk_walk(self, mib_node):
-        cmd = "show snmp mib walk " + mib_node
-        if self.debug:
-            print("[DEBUG] Executing CLI: " + cmd)
-        try:
-            process = subprocess.Popen(['FastCli', '-p', '15', '-c', cmd],
-                                       stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE)
-            
-            output_lines = []
-            
-            # Read stdout line by line
-            if process.stdout:
-                for line_bytes in process.stdout:
-                    line_str = line_bytes.decode('utf-8', errors='ignore')
-                    if self.debug:
-                        sys.stdout.write(line_str)
-                        sys.stdout.flush()
-                    output_lines.append(line_str)
-            
-            # Wait for process and capture stderr
-            _, stderr = process.communicate()
-            
-            decoded = "".join(output_lines)
-            err_decoded = stderr.decode('utf-8', errors='ignore')
-
-            if self.debug:
-                print("\n[DEBUG] FastCli cmd: {0}".format(cmd))
-                print("[DEBUG] FastCli returncode: {0}".format(process.returncode))
-                if err_decoded:
-                    print("[DEBUG] FastCli stderr (truncated): {0}".format(err_decoded[:200].replace('\n', ' ')))
-                print("[DEBUG] Received {0} characters from {1}".format(len(decoded), mib_node))
-            return decoded
-        except Exception as e:
-            if self.debug: print("[DEBUG] CLI Execution Error: " + str(e))
-            return ""
-
-    def parse_bulk_data(self):
-        """Populates RAM cache and shortens Chassis names"""
-        # 1. Names
-        raw_names = self.run_bulk_walk("entPhysicalName")
-        matches = re.findall(r"(?:entPhysicalName|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.7)(?:\[|\.)(\d+)(?:\]|\s+).*?STRING:\s*(.*)", raw_names)
-        for idx, val in matches:
-            name = val.strip('" \r\n')
-            if "Switch Chassis." in name:
-                name = "Switch Chassis"
-            self.names[idx] = name
-
-        # 2. Classes
-        raw_classes = self.run_bulk_walk("entPhysicalClass")
-        matches = re.findall(r"(?:entPhysicalClass|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.5)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*.*?\(?(\d+)\)?", raw_classes)
-        for idx, val in matches:
-            self.classes[idx] = val
-
-        # 3. Containment
-        raw_parents = self.run_bulk_walk("entPhysicalContainedIn")
-        matches = re.findall(r"(?:entPhysicalContainedIn|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.4)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(\d+)", raw_parents)
-        for idx, val in matches:
-            self.parents[idx] = val
-
-        # 4. Relative Position
-        raw_relpos = self.run_bulk_walk("entPhysicalParentRelPos")
-        matches = re.findall(r"(?:entPhysicalParentRelPos|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.6)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(-?\d+)", raw_relpos)
-        for idx, val in matches:
-            self.relpos[idx] = val
-
-        if self.debug:
-            print("[DEBUG] RAM Cache Load Complete:")
-            print("  - Names:   {0}".format(len(self.names)))
-            print("  - Classes: {0}".format(len(self.classes)))
-            print("  - Parents: {0}".format(len(self.parents)))
-            print("  - RelPos:  {0}".format(len(self.relpos)))
-
-    def parse_bulk_from_raw(self, raw_names, raw_classes, raw_parents, raw_relpos):
-        """Populate internal caches from raw SNMP walk strings."""
-        # reset caches
-        self.names = {}
-        self.classes = {}
-        self.parents = {}
-        self.relpos = {}
-        # Helper regex to match either "Name" or ".1.3.6...7" or "SNMPv2-SMI::mib-2...7"
-        # We expect: (prefix)(index) = (type): (value)
-        
-        # 1. Names (.7)
-        name_matches = re.findall(r"(?:entPhysicalName|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.7)(?:\[|\.)(\d+)(?:\]|\s+).*?STRING:\s*(.*)", raw_names)
-        for idx, val in name_matches:
-            name = val.strip('" \r\n')
-            if "Switch Chassis." in name:
-                name = "Switch Chassis"
-            self.names[idx] = name
-
-        # 2. Classes (.5)
-        class_matches = re.findall(r"(?:entPhysicalClass|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.5)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*.*?\(?(\d+)\)?", raw_classes)
-        for idx, val in class_matches:
-            self.classes[idx] = val
-
-        # 3. Parents (.4)
-        parent_matches = re.findall(r"(?:entPhysicalContainedIn|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.4)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(\d+)", raw_parents)
-        for idx, val in parent_matches:
-            self.parents[idx] = val
-
-        # 4. RelPos (.6)
-        relpos_matches = re.findall(r"(?:entPhysicalParentRelPos|(?:\.1\.3\.6\.1\.2\.1|SNMPv2-SMI::mib-2)\.47\.1\.1\.1\.1\.6)(?:\[|\.)(\d+)(?:\]|\s+).*?INTEGER:\s*(-?\d+)", raw_relpos)
-        for idx, val in relpos_matches:
-            self.relpos[idx] = val
-
-        if self.debug:
-            print('[DEBUG] parse_bulk_from_raw loaded: Names={0} Classes={1} Parents={2} RelPos={3}'.format(
-                len(self.names), len(self.classes), len(self.parents), len(self.relpos)
-            ))
-            # show small samples for quick inspection
-            sample_names = list(self.names.items())[:3]
-            sample_classes = list(self.classes.items())[:3]
-            print('[DEBUG] sample names: {0}'.format(sample_names))
-            print('[DEBUG] sample classes: {0}'.format(sample_classes))
-            if not self.names:
-                print('[DEBUG] Warning: No name matches found; raw_names preview: {0}'.format(raw_names[:300].replace('\n', ' ')))
-            if not self.classes:
-                print('[DEBUG] Warning: No class matches found; raw_classes preview: {0}'.format(raw_classes[:300].replace('\n', ' ')))
-
-    def fetch_remote_via_snmp(self, host, community='public', version='2c', timeout=30):
-        """Use local `snmpwalk` to query a remote EOS device and populate caches.
-
-        Requires `snmpwalk` available in PATH. Uses numeric OIDs (ENTITY-MIB).
-        """
-        if self.debug:
-            print('[DEBUG] Fetching SNMP data from {0} (community={1}, version={2})'.format(host, community, version))
-
-        proto = '-v2c' if version == '2c' else '-v1'
-        # -On forces numeric OIDs, avoiding MIB parsing issues
-        # -t 5 sets timeout to 5 seconds per packet (default is 1s, often too short)
-        base_cmd = ['snmpwalk', '-On', '-t', '5', proto, '-c', community, host]
-        # Use numeric OIDs for ENTITY-MIB (more reliable than MIB names)
-        oids = {
-            'names': '1.3.6.1.2.1.47.1.1.1.1.7',      # entPhysicalName
-            'classes': '1.3.6.1.2.1.47.1.1.1.1.5',    # entPhysicalClass
-            'parents': '1.3.6.1.2.1.47.1.1.1.1.4',    # entPhysicalContainedIn
-            'relpos': '1.3.6.1.2.1.47.1.1.1.1.6'      # entPhysicalParentRelPos
-        }
-
-        outputs = {}
-        for key, oid in oids.items():
-            cmd = base_cmd + [oid]
-            try:
-                if self.debug:
-                    print('[DEBUG] running: {0}'.format(' '.join(cmd)))
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                
-                output_lines = []
-                if proc.stdout:
-                    for line_bytes in proc.stdout:
-                        line_str = line_bytes.decode('utf-8', errors='ignore')
-                        if self.debug:
-                            sys.stdout.write(line_str)
-                            sys.stdout.flush()
-                        output_lines.append(line_str)
-                
-                # Wait for completion and capture stderr
-                # Note: We rely on the external tool to timeout or the user to interrupt if it hangs too long,
-                # as strictly streaming with a python-side timeout is complex without threading.
-                _, err = proc.communicate() 
-                ret = proc.returncode
-                
-                text = "".join(output_lines)
-                err_text = err.decode('utf-8', errors='ignore')
-                
-                if not text:
-                    # sometimes snmpwalk writes useful info to stderr
-                    text = err_text
-                outputs[key] = text
-                if self.debug:
-                    print('\n[DEBUG] snmpwalk oid={0} returncode={1} output_len={2}'.format(oid, ret, len(text)))
-                    if err_text:
-                        print('[DEBUG] snmpwalk stderr: {0}'.format(err_text))
-            except FileNotFoundError:
-                print('❌ Error: `snmpwalk` not found in PATH. Install net-snmp client tools.')
-                return False
-            except Exception as e:
-                print('❌ Error running snmpwalk for {0}: {1}'.format(oid, e))
-                return False
-
-        # parse fetched raw outputs into caches
-        self.parse_bulk_from_raw(outputs.get('names', ''), outputs.get('classes', ''), outputs.get('parents', ''), outputs.get('relpos', ''))
-        return True
-
-    def check(self, exit_on_fail=True):
-        """Environment check: determine if running on Arista EOS.
-
-        
-        
-        Detection strategy (best-effort):
-        1. Attempt to run `FastCli -v` and look for 'arista' or 'eos' in output.
-        2. Inspect `/etc/os-release` for 'arista' or 'eos'.
-        3. Fallback to `uname -a` looking for 'arista' or 'eos'.
-
-        If `exit_on_fail` is True, prints an error and exits with code 2 when
-        no EOS indicators are found. Returns True when EOS looks present.
-        """
-        # 1) FastCli presence
-        try:
-            proc = subprocess.Popen(['FastCli', '-v'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            out, err = proc.communicate(timeout=5)
-            text = (out + err).decode('utf-8', errors='ignore').lower()
-            if 'arista' in text or 'eos' in text:
-                if self.debug: print('[DEBUG] Environment check: FastCli indicates EOS')
-                return True
-        except FileNotFoundError:
-            if self.debug: print('[DEBUG] Environment check: FastCli not found in PATH')
-        except Exception as e:
-            if self.debug: print('[DEBUG] Environment check: FastCli check error: {0}'.format(e))
-
-        # 2) /etc/os-release
-        try:
-            with open('/etc/os-release', 'r') as fh:
-                content = fh.read().lower()
-                if 'arista' in content or 'eos' in content:
-                    if self.debug: print('[DEBUG] Environment check: /etc/os-release indicates EOS')
-                    return True
-        except Exception:
-            if self.debug: print('[DEBUG] Environment check: /etc/os-release not readable')
-
-        # 3) uname fallback
-        try:
-            proc = subprocess.Popen(['uname', '-a'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            out, _ = proc.communicate(timeout=3)
-            if b'arista' in out.lower() or b'eos' in out.lower():
-                if self.debug: print('[DEBUG] Environment check: uname indicates EOS')
-                return True
-        except Exception:
-            if self.debug: print('[DEBUG] Environment check: uname check failed')
-
-
-
-        if exit_on_fail:
-            print("❌ Error: Not running on Arista EOS environment. This tool requires EOS access (FastCli) or must be run on an EOS host.")
-            sys.exit(2)
-        return False
-
-    def classify_module(self, index):
-        name = self.names.get(index, "")
-        n_lower = name.lower()
-        p_class = self.classes.get(index, "0")
-        parent_id = self.parents.get(index, "0")
-        
-        if "supervisor" in n_lower and "slot" not in n_lower:
-            return "Supervisor"
-        if "linecard" in n_lower and "slot" not in n_lower:
-            return "Linecard"
-        if "fabric module" in n_lower:
-            return "Fabric"
-        # Check for fan tray but allow component names to pass through if needed
-        if "fan tray" in n_lower and " fan" not in n_lower:
-            return "FanTray"
-        if p_class == '6' or ("power supply" in n_lower and "slot" not in n_lower):
-            return "PowerSupply"
-        if parent_id == "0" and "chassis" in n_lower:
-            return "System"
-        return None
-
-    def get_module_mapping(self, start_index):
-        current = start_index
-        result = {"type": "Unknown", "id": "N/A"}
-        
-        for _ in range(15):
-            mod_category = self.classify_module(current)
-            if mod_category:
-                result["type"] = self.names.get(current, "Unknown")
-                relpos = self.relpos.get(current, "0")
-                if mod_category == "System":
-                    result["id"] = "Chassis"
-                else:
-                    result["id"] = "{0} {1}".format(mod_category, relpos)
-                
-                p_class = self.classes.get(current, "0")
-                if p_class in ['1', '6', '9'] or mod_category == "FanTray":
-                    break
-            
-            current = self.parents.get(current, "0")
-            if current == "0": break
-        return result
-
-    def print_table(self, rows):
-        """Helper to print consistent table format"""
-        header = "{0:<15} | {1:<55} | {2:<60} | {3}".format('Index', 'Sensor Name', 'Module Type (Model)', 'Module ID')
-        line_width = 155
-        sep_line = "-" * line_width
-        
-        print("=" * line_width)
-        print(header)
-        print(sep_line)
-
-        last_module_id = None
-        for idx, s_name, m_type, m_id in rows:
-            if last_module_id is not None and last_module_id != m_id:
-                print(sep_line)
-            
-            print("{0:<15} | {1:<55} | {2:<60} | {3}".format(idx, s_name, m_type, m_id))
-            last_module_id = m_id
-        
-        print("=" * line_width + "\n")
-
-    def dump_sensors(self):
-        if not self.names:
-            print("\n[Loading] Bulk walking MIB into RAM cache...")
-            self.parse_bulk_data()
-        else:
-            if self.debug: print("[Info] Using existing RAM cache (Remote/Pre-loaded)...")
-        
-        sensor_indices = [idx for idx, cls in self.classes.items() if cls in ['7', '8']]
-
-        if not sensor_indices:
-            print("❌ No sensors found. Indices in cache: {0}".format(len(self.classes)))
-            return
-
-        print("Mapping {0} sensors (Wide Mode - Grouped)...".format(len(sensor_indices)))
-        
-        rows = []
-        for idx in sorted(sensor_indices, key=int):
-            s_name = self.names.get(idx, "Unknown")
-            mapping = self.get_module_mapping(idx)
-            rows.append((idx, s_name, mapping['type'], mapping['id']))
-            
-        self.print_table(rows)
-
-    def trace_single(self, index):
-        if not self.names:
-            print("\n[Loading] Bulk walking MIB into RAM cache...")
-            self.parse_bulk_data()
-        else:
-            if self.debug: print("[Info] Using existing RAM cache (Remote/Pre-loaded)...")
-        
-        if index not in self.names:
-            print("❌ Index {0} not found in MIB.".format(index))
-            return
-
-        info = self.get_module_mapping(index)
-        s_name = self.names.get(index, "Unknown")
-        
-        print("Mapping Single Sensor: {0}...".format(index))
-        rows = [(index, s_name, info['type'], info['id'])]
-        self.print_table(rows)
-
+        self.names: Dict[str, str] = {}      # Index -> Name
+        self.classes: Dict[str, str] = {}    # Index -> Class ID
+        self.parents: Dict[str, str] = {}   # Index -> Parent Index
+        self.relpos: Dict[str, str] = {}    # Index -> Relative Position
+    
+    # ========================================================================
+    # Initialization and Cleanup
+    # ========================================================================
+    
     def cleanup(self):
-        """Explicitly deallocate memory for large dictionaries"""
-        if self.debug: print("[DEBUG] Cleaning up RAM cache...")
+        """Explicitly deallocate memory for large dictionaries."""
+        if self.debug:
+            print("[DEBUG] Cleaning up RAM cache...")
         self.names.clear()
         self.classes.clear()
         self.parents.clear()
@@ -375,8 +126,526 @@ class FastTracer:
         self.classes = None
         self.parents = None
         self.relpos = None
+    
+    # ========================================================================
+    # Environment Detection
+    # ========================================================================
+    
+    def check_eos_environment(self, exit_on_fail: bool = True) -> bool:
+        """
+        Check if running on Arista EOS environment.
+        
+        Detection strategy (best-effort):
+        1. Attempt to run `FastCli -v` and look for 'arista' or 'eos' in output.
+        2. Inspect `/etc/os-release` for 'arista' or 'eos'.
+        3. Fallback to `uname -a` looking for 'arista' or 'eos'.
+        
+        Args:
+            exit_on_fail: If True, exit with code 2 when EOS not detected.
+            
+        Returns:
+            True if EOS environment detected, False otherwise.
+        """
+        # Method 1: FastCli presence
+        if self._check_fastcli():
+            return True
+        
+        # Method 2: /etc/os-release
+        if self._check_os_release():
+            return True
+        
+        # Method 3: uname fallback
+        if self._check_uname():
+            return True
+        
+        if exit_on_fail:
+            print("❌ Error: Not running on Arista EOS environment. "
+                  "This tool requires EOS access (FastCli) or must be run on an EOS host.")
+            sys.exit(2)
+        return False
+    
+    def _check_fastcli(self) -> bool:
+        """Check for FastCli presence and EOS indicators."""
+        try:
+            proc = subprocess.Popen(['FastCli', '-v'], 
+                                  stdout=subprocess.PIPE, 
+                                  stderr=subprocess.PIPE)
+            out, err = proc.communicate(timeout=5)
+            text = (out + err).decode('utf-8', errors='ignore').lower()
+            if 'arista' in text or 'eos' in text:
+                if self.debug:
+                    print('[DEBUG] Environment check: FastCli indicates EOS')
+                return True
+        except FileNotFoundError:
+            if self.debug:
+                print('[DEBUG] Environment check: FastCli not found in PATH')
+        except Exception as e:
+            if self.debug:
+                print(f'[DEBUG] Environment check: FastCli check error: {e}')
+        return False
+    
+    def _check_os_release(self) -> bool:
+        """Check /etc/os-release for EOS indicators."""
+        try:
+            with open('/etc/os-release', 'r') as fh:
+                content = fh.read().lower()
+                if 'arista' in content or 'eos' in content:
+                    if self.debug:
+                        print('[DEBUG] Environment check: /etc/os-release indicates EOS')
+                    return True
+        except Exception:
+            if self.debug:
+                print('[DEBUG] Environment check: /etc/os-release not readable')
+        return False
+    
+    def _check_uname(self) -> bool:
+        """Check uname output for EOS indicators."""
+        try:
+            proc = subprocess.Popen(['uname', '-a'], 
+                                  stdout=subprocess.PIPE, 
+                                  stderr=subprocess.PIPE)
+            out, _ = proc.communicate(timeout=3)
+            if b'arista' in out.lower() or b'eos' in out.lower():
+                if self.debug:
+                    print('[DEBUG] Environment check: uname indicates EOS')
+                return True
+        except Exception:
+            if self.debug:
+                print('[DEBUG] Environment check: uname check failed')
+        return False
+    
+    # ========================================================================
+    # Data Fetching (FastCli - On-Device)
+    # ========================================================================
+    
+    def fetch_data_via_fastcli(self) -> bool:
+        """
+        Fetch SNMP data using FastCli (on-device method).
+        
+        Returns:
+            True if data was successfully fetched and parsed.
+        """
+        if self.debug:
+            print("\n[Loading] Bulk walking MIB into RAM cache...")
+        
+        try:
+            raw_data = {}
+            for key, mib_node in MIB_NODES.items():
+                raw_data[key] = self._run_fastcli_walk(mib_node)
+            
+            self._parse_raw_data(
+                raw_data.get('names', ''),
+                raw_data.get('classes', ''),
+                raw_data.get('parents', ''),
+                raw_data.get('relpos', '')
+            )
+            return True
+        except Exception as e:
+            if self.debug:
+                print(f"[DEBUG] Error fetching data via FastCli: {e}")
+            return False
+    
+    def _run_fastcli_walk(self, mib_node: str) -> str:
+        """
+        Execute a FastCli SNMP MIB walk command.
+        
+        Args:
+            mib_node: MIB node name (e.g., 'entPhysicalName')
+            
+        Returns:
+            Decoded output string, empty string on error.
+        """
+        cmd = f"show snmp mib walk {mib_node}"
+        if self.debug:
+            print(f"[DEBUG] Executing CLI: {cmd}")
+        
+        try:
+            process = subprocess.Popen(
+                ['FastCli', '-p', '15', '-c', cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            
+            output_lines = []
+            if process.stdout:
+                for line_bytes in process.stdout:
+                    line_str = line_bytes.decode('utf-8', errors='ignore')
+                    if self.debug:
+                        sys.stdout.write(line_str)
+                        sys.stdout.flush()
+                    output_lines.append(line_str)
+            
+            _, stderr = process.communicate()
+            decoded = "".join(output_lines)
+            err_decoded = stderr.decode('utf-8', errors='ignore')
+            
+            if self.debug:
+                print(f"\n[DEBUG] FastCli cmd: {cmd}")
+                print(f"[DEBUG] FastCli returncode: {process.returncode}")
+                if err_decoded:
+                    err_preview = err_decoded[:200].replace('\n', ' ')
+                    print(f"[DEBUG] FastCli stderr (truncated): {err_preview}")
+                print(f"[DEBUG] Received {len(decoded)} characters from {mib_node}")
+            
+            return decoded
+        except Exception as e:
+            if self.debug:
+                print(f"[DEBUG] CLI Execution Error: {e}")
+            return ""
+    
+    # ========================================================================
+    # Data Fetching (SNMP - Remote)
+    # ========================================================================
+    
+    def fetch_data_via_snmp(self, 
+                           host: str, 
+                           community: str = SNMP_DEFAULTS['community'],
+                           version: str = SNMP_DEFAULTS['version'],
+                           timeout: int = SNMP_DEFAULTS['timeout']) -> bool:
+        """
+        Fetch SNMP data from remote EOS device using snmpwalk.
+        
+        Args:
+            host: Remote EOS hostname or IP address
+            community: SNMP community string
+            version: SNMP version ('1' or '2c')
+            timeout: Overall timeout in seconds (not strictly enforced)
+            
+        Returns:
+            True if data was successfully fetched and parsed.
+        """
+        if self.debug:
+            print(f'[DEBUG] Fetching SNMP data from {host} '
+                  f'(community={community}, version={version})')
+        
+        proto = '-v2c' if version == '2c' else '-v1'
+        base_cmd = [
+            'snmpwalk', '-On', '-t', str(SNMP_DEFAULTS['packet_timeout']),
+            proto, '-c', community, host
+        ]
+        
+        outputs = {}
+        for key, oid in ENTITY_MIB_OIDS.items():
+            cmd = base_cmd + [oid]
+            try:
+                if self.debug:
+                    print(f'[DEBUG] running: {" ".join(cmd)}')
+                
+                output = self._run_snmpwalk(cmd, oid)
+                if output is None:
+                    return False
+                outputs[key] = output
+            except Exception as e:
+                print(f'❌ Error running snmpwalk for {oid}: {e}')
+                return False
+        
+        # Parse fetched raw outputs into caches
+        self._parse_raw_data(
+            outputs.get('names', ''),
+            outputs.get('classes', ''),
+            outputs.get('parents', ''),
+            outputs.get('relpos', '')
+        )
+        return True
+    
+    def _run_snmpwalk(self, cmd: List[str], oid: str) -> Optional[str]:
+        """
+        Execute snmpwalk command and return output.
+        
+        Args:
+            cmd: Complete snmpwalk command as list
+            oid: OID being queried (for error messages)
+            
+        Returns:
+            Output text or None on error.
+        """
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            output_lines = []
+            if proc.stdout:
+                for line_bytes in proc.stdout:
+                    line_str = line_bytes.decode('utf-8', errors='ignore')
+                    if self.debug:
+                        sys.stdout.write(line_str)
+                        sys.stdout.flush()
+                    output_lines.append(line_str)
+            
+            _, err = proc.communicate()
+            ret = proc.returncode
+            
+            text = "".join(output_lines)
+            err_text = err.decode('utf-8', errors='ignore')
+            
+            # Sometimes snmpwalk writes useful info to stderr
+            if not text:
+                text = err_text
+            
+            if self.debug:
+                print(f'\n[DEBUG] snmpwalk oid={oid} returncode={ret} output_len={len(text)}')
+                if err_text:
+                    print(f'[DEBUG] snmpwalk stderr: {err_text}')
+            
+            return text
+        except FileNotFoundError:
+            print('❌ Error: `snmpwalk` not found in PATH. Install net-snmp client tools.')
+            return None
+        except Exception as e:
+            print(f'❌ Error running snmpwalk for {oid}: {e}')
+            return None
+    
+    # ========================================================================
+    # Data Parsing
+    # ========================================================================
+    
+    def _parse_raw_data(self, 
+                       raw_names: str, 
+                       raw_classes: str, 
+                       raw_parents: str, 
+                       raw_relpos: str):
+        """
+        Parse raw SNMP walk output and populate internal caches.
+        
+        Args:
+            raw_names: Raw output from entPhysicalName walk
+            raw_classes: Raw output from entPhysicalClass walk
+            raw_parents: Raw output from entPhysicalContainedIn walk
+            raw_relpos: Raw output from entPhysicalParentRelPos walk
+        """
+        # Reset caches
+        self.names = {}
+        self.classes = {}
+        self.parents = {}
+        self.relpos = {}
+        
+        # Parse each data type
+        self._parse_names(raw_names)
+        self._parse_classes(raw_classes)
+        self._parse_parents(raw_parents)
+        self._parse_relpos(raw_relpos)
+        
+        if self.debug:
+            self._debug_parse_results(raw_names, raw_classes)
+    
+    def _parse_names(self, raw_data: str):
+        """Parse entPhysicalName data."""
+        matches = self._regex_patterns['name'].findall(raw_data)
+        for idx, val in matches:
+            name = val.strip('" \r\n')
+            # Normalize "Switch Chassis." variations
+            if "Switch Chassis." in name:
+                name = "Switch Chassis"
+            self.names[idx] = name
+    
+    def _parse_classes(self, raw_data: str):
+        """Parse entPhysicalClass data."""
+        matches = self._regex_patterns['class'].findall(raw_data)
+        for idx, val in matches:
+            self.classes[idx] = val
+    
+    def _parse_parents(self, raw_data: str):
+        """Parse entPhysicalContainedIn data."""
+        matches = self._regex_patterns['parent'].findall(raw_data)
+        for idx, val in matches:
+            self.parents[idx] = val
+    
+    def _parse_relpos(self, raw_data: str):
+        """Parse entPhysicalParentRelPos data."""
+        matches = self._regex_patterns['relpos'].findall(raw_data)
+        for idx, val in matches:
+            self.relpos[idx] = val
+    
+    def _debug_parse_results(self, raw_names: str, raw_classes: str):
+        """Print debug information about parsed data."""
+        print('[DEBUG] parse_bulk_from_raw loaded: '
+              f'Names={len(self.names)} Classes={len(self.classes)} '
+              f'Parents={len(self.parents)} RelPos={len(self.relpos)}')
+        
+        # Show small samples for quick inspection
+        sample_names = list(self.names.items())[:3]
+        sample_classes = list(self.classes.items())[:3]
+        print(f'[DEBUG] sample names: {sample_names}')
+        print(f'[DEBUG] sample classes: {sample_classes}')
+        
+        if not self.names:
+            preview = raw_names[:300].replace('\n', ' ')
+            print(f'[DEBUG] Warning: No name matches found; raw_names preview: {preview}')
+        if not self.classes:
+            preview = raw_classes[:300].replace('\n', ' ')
+            print(f'[DEBUG] Warning: No class matches found; raw_classes preview: {preview}')
+    
+    # ========================================================================
+    # Module Classification and Mapping
+    # ========================================================================
+    
+    def classify_module(self, index: str) -> Optional[str]:
+        """
+        Classify a module by its index.
+        
+        Args:
+            index: Physical entity index
+            
+        Returns:
+            Module category string or None if not a recognized module type.
+            Categories: 'Supervisor', 'Linecard', 'Fabric', 'FanTray', 
+                       'PowerSupply', 'System'
+        """
+        name = self.names.get(index, "")
+        n_lower = name.lower()
+        p_class = self.classes.get(index, "0")
+        parent_id = self.parents.get(index, "0")
+        
+        # Classification rules (order matters)
+        if "supervisor" in n_lower and "slot" not in n_lower:
+            return "Supervisor"
+        if "linecard" in n_lower and "slot" not in n_lower:
+            return "Linecard"
+        if "fabric module" in n_lower:
+            return "Fabric"
+        if "fan tray" in n_lower and " fan" not in n_lower:
+            return "FanTray"
+        if p_class == '6' or ("power supply" in n_lower and "slot" not in n_lower):
+            return "PowerSupply"
+        if parent_id == "0" and "chassis" in n_lower:
+            return "System"
+        
+        return None
+    
+    def get_module_mapping(self, start_index: str) -> Dict[str, str]:
+        """
+        Trace a sensor index to its parent module.
+        
+        Recursively climbs the parent tree until finding a recognized module.
+        
+        Args:
+            start_index: Starting physical entity index (typically a sensor)
+            
+        Returns:
+            Dictionary with keys:
+            - 'type': Module type name (e.g., "DCS-7280SR3-48YC6-F")
+            - 'id': Module identifier (e.g., "Linecard 1" or "Chassis")
+        """
+        current = start_index
+        result = {"type": "Unknown", "id": "N/A"}
+        
+        for _ in range(MAX_PARENT_DEPTH):
+            mod_category = self.classify_module(current)
+            if mod_category:
+                result["type"] = self.names.get(current, "Unknown")
+                relpos = self.relpos.get(current, "0")
+                
+                if mod_category == "System":
+                    result["id"] = "Chassis"
+                else:
+                    result["id"] = f"{mod_category} {relpos}"
+                
+                # Stop at terminal classes or FanTray
+                p_class = self.classes.get(current, "0")
+                if p_class in TERMINAL_CLASSES or mod_category == "FanTray":
+                    break
+            
+            current = self.parents.get(current, "0")
+            if current == "0":
+                break
+        
+        return result
+    
+    # ========================================================================
+    # Output and Formatting
+    # ========================================================================
+    
+    def print_table(self, rows: List[Tuple[str, str, str, str]]):
+        """
+        Print a formatted table of sensor mappings.
+        
+        Args:
+            rows: List of tuples (index, sensor_name, module_type, module_id)
+        """
+        header = (f"{'Index':<{TABLE_COLUMNS['index']}} | "
+                 f"{'Sensor Name':<{TABLE_COLUMNS['sensor_name']}} | "
+                 f"{'Module Type (Model)':<{TABLE_COLUMNS['module_type']}} | "
+                 f"{'Module ID'}")
+        sep_line = "-" * TABLE_WIDTH
+        
+        print("=" * TABLE_WIDTH)
+        print(header)
+        print(sep_line)
+        
+        last_module_id = None
+        for idx, s_name, m_type, m_id in rows:
+            if last_module_id is not None and last_module_id != m_id:
+                print(sep_line)
+            
+            print(f"{idx:<{TABLE_COLUMNS['index']}} | "
+                 f"{s_name:<{TABLE_COLUMNS['sensor_name']}} | "
+                 f"{m_type:<{TABLE_COLUMNS['module_type']}} | "
+                 f"{m_id}")
+            last_module_id = m_id
+        
+        print("=" * TABLE_WIDTH + "\n")
+    
+    # ========================================================================
+    # Public API Methods
+    # ========================================================================
+    
+    def ensure_data_loaded(self):
+        """Ensure SNMP data is loaded, fetching if necessary."""
+        if not self.names:
+            self.fetch_data_via_fastcli()
+        elif self.debug:
+            print("[Info] Using existing RAM cache (Remote/Pre-loaded)...")
+    
+    def dump_all_sensors(self):
+        """Map all sensors to their parent modules and print results."""
+        self.ensure_data_loaded()
+        
+        # Find all sensor indices (class 7 or 8)
+        sensor_indices = [
+            idx for idx, cls in self.classes.items() 
+            if cls in SENSOR_CLASSES
+        ]
+        
+        if not sensor_indices:
+            print(f"❌ No sensors found. Indices in cache: {len(self.classes)}")
+            return
+        
+        print(f"Mapping {len(sensor_indices)} sensors (Wide Mode - Grouped)...")
+        
+        rows = []
+        for idx in sorted(sensor_indices, key=int):
+            s_name = self.names.get(idx, "Unknown")
+            mapping = self.get_module_mapping(idx)
+            rows.append((idx, s_name, mapping['type'], mapping['id']))
+        
+        self.print_table(rows)
+    
+    def trace_single_sensor(self, index: str):
+        """
+        Trace a single sensor index to its parent module.
+        
+        Args:
+            index: Physical entity index to trace
+        """
+        self.ensure_data_loaded()
+        
+        if index not in self.names:
+            print(f"❌ Index {index} not found in MIB.")
+            return
+        
+        info = self.get_module_mapping(index)
+        s_name = self.names.get(index, "Unknown")
+        
+        print(f"Mapping Single Sensor: {index}...")
+        rows = [(index, s_name, info['type'], info['id'])]
+        self.print_table(rows)
 
-if __name__ == "__main__":
+
+# ============================================================================
+# Main Entry Point
+# ============================================================================
+
+def create_argument_parser():
+    """Create and configure the argument parser."""
     usage_epilog = """
 ALGORITHM:
   1. Bulk Ingest: Retrieves complete ENTITY-MIB tables into RAM using 4 specific commands:
@@ -406,40 +675,109 @@ AUTHOR:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=usage_epilog
     )
-    parser.add_argument("index", nargs='?', help="Physical index to trace.")
-    parser.add_argument("-a", "--all", action="store_true", help="Bulk map all sensors to module ID.")
-    parser.add_argument("-d", "--debug", action="store_true", help="Show raw CLI execution and parse counts.")
-    parser.add_argument("-s", "--snmp-host", help="Remote EOS host to query via SNMP (when not on-device).")
-    parser.add_argument("-c", "--snmp-community", default="public", help="SNMP community string (default: public).")
-    parser.add_argument("-v", "--snmp-version", choices=['1','2c'], default='2c', help="SNMP version (default: 2c).")
-    parser.add_argument("-t", "--snmp-timeout", type=int, default=60, help="SNMP query timeout in seconds (default: 60).")
-    parser.add_argument("-V", "--version", action="version", version="%(prog)s 1.0", help="Show program version and exit.")
+    parser.add_argument(
+        "index", 
+        nargs='?', 
+        help="Physical index to trace."
+    )
+    parser.add_argument(
+        "-a", "--all", 
+        action="store_true", 
+        help="Bulk map all sensors to module ID."
+    )
+    parser.add_argument(
+        "-d", "--debug", 
+        action="store_true", 
+        help="Show raw CLI execution and parse counts."
+    )
+    parser.add_argument(
+        "-s", "--snmp-host", 
+        help="Remote EOS host to query via SNMP (when not on-device)."
+    )
+    parser.add_argument(
+        "-c", "--snmp-community", 
+        default=SNMP_DEFAULTS['community'], 
+        help=f"SNMP community string (default: {SNMP_DEFAULTS['community']})."
+    )
+    parser.add_argument(
+        "-v", "--snmp-version", 
+        choices=['1', '2c'], 
+        default=SNMP_DEFAULTS['version'], 
+        help=f"SNMP version (default: {SNMP_DEFAULTS['version']})."
+    )
+    parser.add_argument(
+        "-t", "--snmp-timeout", 
+        type=int, 
+        default=SNMP_DEFAULTS['timeout'], 
+        help=f"SNMP query timeout in seconds (default: {SNMP_DEFAULTS['timeout']})."
+    )
+    parser.add_argument(
+        "-V", "--version", 
+        action="version", 
+        version="%(prog)s 1.0", 
+        help="Show program version and exit."
+    )
+    return parser
 
+
+def validate_index(index: Optional[str]) -> bool:
+    """
+    Validate that index is a positive integer if provided.
+    
+    Args:
+        index: Index string to validate
+        
+    Returns:
+        True if valid, False otherwise
+    """
+    if index and not index.isdigit():
+        print(f"❌ Error: Invalid index '{index}'. Index must be a positive integer.")
+        return False
+    return True
+
+
+def main():
+    """Main entry point."""
+    parser = create_argument_parser()
     args = parser.parse_args()
+    
     tracer = FastTracer(debug=args.debug)
-    is_eos = tracer.check(exit_on_fail=False)
+    
+    # Check environment
+    is_eos = tracer.check_eos_environment(exit_on_fail=False)
+    
     if not is_eos:
         # Not on-device: require SNMP host to be provided
         if not args.snmp_host:
-            print("❌ Error: Not on Arista EOS. Provide --snmp-host to fetch SNMP data from a remote EOS device.")
+            print("❌ Error: Not on Arista EOS. Provide --snmp-host to fetch "
+                  "SNMP data from a remote EOS device.")
             sys.exit(2)
-
-        ok = tracer.fetch_remote_via_snmp(args.snmp_host, community=args.snmp_community, version=args.snmp_version, timeout=args.snmp_timeout)
+        
+        ok = tracer.fetch_data_via_snmp(
+            args.snmp_host,
+            community=args.snmp_community,
+            version=args.snmp_version,
+            timeout=args.snmp_timeout
+        )
         if not ok:
-            print("❌ Error: Failed to fetch SNMP data from {0}".format(args.snmp_host))
+            print(f"❌ Error: Failed to fetch SNMP data from {args.snmp_host}")
             sys.exit(3)
-
-    # Input Validation: Ensure index is a positive integer if provided
-    if args.index and not args.index.isdigit():
-        print("❌ Error: Invalid index '{0}'. Index must be a positive integer.".format(args.index))
+    
+    # Input validation
+    if not validate_index(args.index):
         sys.exit(1)
-
+    
+    # Execute main logic
     try:
         if args.all:
-            tracer.dump_sensors()
+            tracer.dump_all_sensors()
         elif args.index:
-            tracer.trace_single(args.index)
+            tracer.trace_single_sensor(args.index)
         else:
             parser.print_help()
     finally:
         tracer.cleanup()
+
+
+if __name__ == "__main__":
+    main()
