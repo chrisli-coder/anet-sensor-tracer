@@ -6,6 +6,7 @@ High-speed Arista EOS Sensor Tracer that maps sensor indices to their parent mod
 
 ## Features
 
+- **Strictly for Arista 7800 Series**: Optimized trace algorithm specifically for 7800 chassis architecture (7804/7808/7812/7816/7816L)
 - **RAM Caching**: Bulk loads ENTITY-MIB tables into memory for fast processing
 - **Dual Mode Operation**: Works both on-device (FastCli) and remotely (SNMP)
 - **Input Validation**: Validates sensor indices before processing
@@ -15,13 +16,13 @@ High-speed Arista EOS Sensor Tracer that maps sensor indices to their parent mod
 ## Requirements
 
 ### On-Device Mode (EOS)
-- Arista EOS device with `FastCli` available
+- Arista EOS device (7800 Series) with `FastCli` available
 - Python 3.x
 
 ### Remote Mode (SNMP)
 - `snmpwalk` command-line tool (from net-snmp package)
 - Python 3.x
-- Network access to target EOS device
+- Network access to target EOS device (7800 Series)
 
 ## Installation
 
