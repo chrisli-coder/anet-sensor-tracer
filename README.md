@@ -118,7 +118,7 @@ The tool outputs a formatted table with the following columns:
 
 - **Index**: Physical entity index
 - **Sensor Name**: Name of the sensor/fan
-- **Module Type (Model)**: Full module model name (e.g., "DCS-7280SR3-48YC6-F")
+- **Module Type (Model)**: Full module model name (e.g., "DCS-7800R3-36p")
 - **Module ID**: Module identifier (e.g., "Linecard 1", "Supervisor 0", "Chassis")
 
 Results are grouped and separated by physical Module ID for easy reading.
@@ -154,8 +154,8 @@ Mapping 942 sensors (Wide Mode - Grouped)...
 ===============================================================================================================
 Index           | Sensor Name                                          | Module Type (Model)                                    | Module ID
 ---------------------------------------------------------------------------------------------------------------
-1001            | Temp: CPU Core 0                                     | DCS-7280SR3-48YC6-F                                    | Supervisor 0
-1002            | Temp: CPU Core 1                                     | DCS-7280SR3-48YC6-F                                    | Supervisor 0
+1001            | Temp: CPU Core 0                                     | DCS-7800R3-36p                                         | Supervisor 0
+1002            | Temp: CPU Core 1                                     | DCS-7800R3-36p                                         | Supervisor 0
 ...
 ```
 
@@ -176,7 +176,7 @@ Mapping Single Sensor: 1001...
 ===============================================================================================================
 Index           | Sensor Name                                          | Module Type (Model)                                    | Module ID
 ---------------------------------------------------------------------------------------------------------------
-1001            | Temp: CPU Core 0                                     | DCS-7280SR3-48YC6-F                                    | Supervisor 0
+1001            | Temp: CPU Core 0                                     | DCS-7800R3-36p                                         | Supervisor 0
 ===============================================================================================================
 ```
 
