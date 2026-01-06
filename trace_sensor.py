@@ -214,6 +214,73 @@ class FastTracer:
                 print('[DEBUG] Environment check: uname check failed')
         return False
     
+    def check_model_compatibility(self, is_remote: bool = False, host: str = "") -> bool:
+        """
+        Check if the target device is an Arista 7800 series.
+        
+        Args:
+            is_remote: If True, check via SNMP on 'host'.
+            host: Hostname/IP for remote check.
+            
+        Returns:
+            True if 7800 series detected, False otherwise.
+        """
+        if is_remote:
+            return self._check_model_remote(host)
+        else:
+            return self._check_model_local()
+        
+    def _check_model_local(self) -> bool:
+        """Check local device model via FastCli."""
+        try:
+            cmd = "show version"
+            proc = subprocess.Popen(['FastCli', '-p', '15', '-c', cmd],
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
+            out, err = proc.communicate(timeout=5)
+            text = (out + err).decode('utf-8', errors='ignore')
+            
+            # Look for 7800 indicators
+            # Output typically contains: "Model: DCS-7800R3-..."
+            if "7800" in text or "DCS-78" in text:
+                if self.debug:
+                    print('[DEBUG] Model check: Detected 7800 series (local)')
+                return True
+            
+            if self.debug:
+                print(f'[DEBUG] Model check failed. Output excerpt: {text[:200]}')
+        except Exception as e:
+            if self.debug:
+                print(f'[DEBUG] Model check error: {e}')
+        
+        return False
+
+    def _check_model_remote(self, host: str) -> bool:
+        """Check remote device model via SNMP sysDescr."""
+        # sysDescr OID: 1.3.6.1.2.1.1.1.0
+        oid = "1.3.6.1.2.1.1.1.0"
+        
+        cmd = [
+            'snmpwalk', '-v2c', '-c', SNMP_DEFAULTS['community'], 
+            '-On', '-t', str(SNMP_DEFAULTS['packet_timeout']), 
+            host, oid
+        ]
+        
+        try:
+            output = self._run_snmpwalk(cmd, oid)
+            if output and ("7800" in output or "DCS-78" in output):
+                if self.debug:
+                    print(f'[DEBUG] Model check: Detected 7800 series (remote {host})')
+                return True
+            
+            if self.debug:
+                print(f'[DEBUG] Remote model check failed. Output: {output}')
+        except Exception as e:
+            if self.debug:
+                print(f'[DEBUG] Remote model check error: {e}')
+                
+        return False
+    
     # ========================================================================
     # Data Fetching (FastCli - On-Device)
     # ========================================================================
@@ -663,6 +730,7 @@ ALGORITHM:
      to generate the unique Module ID.
 
 NOTES:
+  - This tool is STRICTLY for Arista 7800 Series devices (7804, 7808, 7812, 7816, 7816L).
   - RAM caching reduces 900+ sensor processing from minutes to seconds.
   - Results are grouped and separated by physical Module ID.
 
@@ -671,7 +739,7 @@ AUTHOR:
   Copyright (c) 2025 Arista Networks
 """
     parser = argparse.ArgumentParser(
-        description="High-speed Arista Sensor Tracer.",
+        description="High-speed Arista Sensor Tracer (7800 Series Only).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=usage_epilog
     )
@@ -762,6 +830,18 @@ def main():
         if not ok:
             print(f"❌ Error: Failed to fetch SNMP data from {args.snmp_host}")
             sys.exit(3)
+
+    # Check for Arista 7800 Series Compatibility
+    is_remote = not is_eos
+    target_host = args.snmp_host if is_remote else "localhost"
+    
+    if args.debug:
+         print(f"[DEBUG] Checking if target is Arista 7800 series (Remote={is_remote})...")
+
+    if not tracer.check_model_compatibility(is_remote=is_remote, host=target_host):
+        print("❌ Error: Target device is not an Arista 7800 series.")
+        print("   This tool is optimized for Arista 7800 chassis architecture.")
+        sys.exit(4)
     
     # Input validation
     if not validate_index(args.index):
