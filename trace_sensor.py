@@ -811,28 +811,25 @@ def main():
     
     tracer = FastTracer(debug=args.debug)
     
-    # Check environment
-    is_eos = tracer.check_eos_environment(exit_on_fail=False)
+    # Determine mode: Remote (SNMP) vs Local (FastCli)
+    # If --snmp-host is provided, we ALWAYS use remote mode, even if running on an EOS box.
+    is_remote = bool(args.snmp_host)
     
-    if not is_eos:
-        # Not on-device: require SNMP host to be provided
-        if not args.snmp_host:
+    # 1. Environment & Connectivity Check
+    if is_remote:
+         if args.debug:
+             print(f"[DEBUG] Mode: Remote SNMP query to {args.snmp_host}")
+    else:
+        # Local mode requires running on EOS
+        is_eos = tracer.check_eos_environment(exit_on_fail=False)
+        if not is_eos:
             print("❌ Error: Not on Arista EOS. Provide --snmp-host to fetch "
                   "SNMP data from a remote EOS device.")
             sys.exit(2)
-        
-        ok = tracer.fetch_data_via_snmp(
-            args.snmp_host,
-            community=args.snmp_community,
-            version=args.snmp_version,
-            timeout=args.snmp_timeout
-        )
-        if not ok:
-            print(f"❌ Error: Failed to fetch SNMP data from {args.snmp_host}")
-            sys.exit(3)
+        if args.debug:
+             print("[DEBUG] Mode: Local FastCli execution")
 
-    # Check for Arista 7800 Series Compatibility
-    is_remote = not is_eos
+    # 2. Model Compatibility Check (7800 Series)
     target_host = args.snmp_host if is_remote else "localhost"
     
     if args.debug:
@@ -842,6 +839,23 @@ def main():
         print("❌ Error: Target device is not an Arista 7800 series.")
         print("   This tool is optimized for Arista 7800 chassis architecture.")
         sys.exit(4)
+
+    # 3. Data Fetching
+    if is_remote:
+        ok = tracer.fetch_data_via_snmp(
+            args.snmp_host,
+            community=args.snmp_community,
+            version=args.snmp_version,
+            timeout=args.snmp_timeout
+        )
+        if not ok:
+            print(f"❌ Error: Failed to fetch SNMP data from {args.snmp_host}")
+            sys.exit(3)
+    else:
+        # For local mode, data is fetched on-demand by dump_all_sensors/trace_single_sensor
+        # checking EnsureDataLoaded, but we can also pre-fetch here if we wanted.
+        # The original code did it lazily. We'll stick to that.
+        pass
     
     # Input validation
     if not validate_index(args.index):
