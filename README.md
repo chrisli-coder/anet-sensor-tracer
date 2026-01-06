@@ -61,6 +61,8 @@ python3 trace_sensor.py -a -d
 
 ### Remote SNMP Mode
 
+### Remote SNMP Mode
+
 **Query remote EOS device via SNMP:**
 ```bash
 python3 trace_sensor.py -a -s 10.0.0.1
