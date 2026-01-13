@@ -131,31 +131,25 @@ class FastTracer:
     # Environment Detection
     # ========================================================================
     
-    def check_eos_environment(self, exit_on_fail: bool = True) -> bool:
+    def check_eos_environment(self, is_remote: bool = False, exit_on_fail: bool = True) -> bool:
         """
-        Check if running on Arista EOS environment.
-        
-        Detection strategy (best-effort):
-        1. Attempt to run `FastCli -v` and look for 'arista' or 'eos' in output.
-        2. Inspect `/etc/os-release` for 'arista' or 'eos'.
-        3. Fallback to `uname -a` looking for 'arista' or 'eos'.
+        Check if running on Arista EOS environment or bypass if remote.
         
         Args:
+            is_remote: If True, bypass check (assume remote EOS).
             exit_on_fail: If True, exit with code 2 when EOS not detected.
             
         Returns:
-            True if EOS environment detected, False otherwise.
+            True if EOS environment detected or bypassed, False otherwise.
         """
-        # Method 1: FastCli presence
+        # Bypass for remote mode
+        if is_remote:
+            if self.debug:
+                print('[DEBUG] Environment check: Bypassed (Remote Mode)')
+            return True
+
+        # Local Mode: FastCli presence check
         if self._check_fastcli():
-            return True
-        
-        # Method 2: /etc/os-release
-        if self._check_os_release():
-            return True
-        
-        # Method 3: uname fallback
-        if self._check_uname():
             return True
         
         if exit_on_fail:
@@ -184,35 +178,7 @@ class FastTracer:
                 print(f'[DEBUG] Environment check: FastCli check error: {e}')
         return False
     
-    def _check_os_release(self) -> bool:
-        """Check /etc/os-release for EOS indicators."""
-        try:
-            with open('/etc/os-release', 'r') as fh:
-                content = fh.read().lower()
-                if 'arista' in content or 'eos' in content:
-                    if self.debug:
-                        print('[DEBUG] Environment check: /etc/os-release indicates EOS')
-                    return True
-        except Exception:
-            if self.debug:
-                print('[DEBUG] Environment check: /etc/os-release not readable')
-        return False
-    
-    def _check_uname(self) -> bool:
-        """Check uname output for EOS indicators."""
-        try:
-            proc = subprocess.Popen(['uname', '-a'], 
-                                  stdout=subprocess.PIPE, 
-                                  stderr=subprocess.PIPE)
-            out, _ = proc.communicate(timeout=3)
-            if b'arista' in out.lower() or b'eos' in out.lower():
-                if self.debug:
-                    print('[DEBUG] Environment check: uname indicates EOS')
-                return True
-        except Exception:
-            if self.debug:
-                print('[DEBUG] Environment check: uname check failed')
-        return False
+
     
     def check_model_compatibility(self, is_remote: bool = False, host: str = "") -> bool:
         """
@@ -816,18 +782,13 @@ def main():
     is_remote = bool(args.snmp_host)
     
     # 1. Environment & Connectivity Check
-    if is_remote:
-         if args.debug:
-             print(f"[DEBUG] Mode: Remote SNMP query to {args.snmp_host}")
-    else:
-        # Local mode requires running on EOS
-        is_eos = tracer.check_eos_environment(exit_on_fail=False)
-        if not is_eos:
-            print("❌ Error: Not on Arista EOS. Provide --snmp-host to fetch "
-                  "SNMP data from a remote EOS device.")
-            sys.exit(2)
-        if args.debug:
-             print("[DEBUG] Mode: Local FastCli execution")
+    # If is_remote is True, the check is bypassed inside the function.
+    if is_remote and args.debug:
+        print(f"[DEBUG] Mode: Remote SNMP query to {args.snmp_host}")
+    elif not is_remote and args.debug:
+        print("[DEBUG] Mode: Local FastCli execution")
+
+    tracer.check_eos_environment(is_remote=is_remote, exit_on_fail=True)
 
     # 2. Model Compatibility Check (7800 Series)
     target_host = args.snmp_host if is_remote else "localhost"
