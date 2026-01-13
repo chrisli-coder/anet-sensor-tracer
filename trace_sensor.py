@@ -4,7 +4,12 @@ Arista EOS Sensor Tracer (Ultra-Fast)
 Copyright (c) 2025 Arista Networks
 Author: chris.li@arista.com
 
-Features: RAM Caching, Input Validation, Algo Description, Memory Cleanup.
+Features: 
+- RAM Caching for high performance
+- Dual Mode: Local (FastCli) and Remote (SNMP)
+- Strict Arista 7800 Series Model Enforcement
+- Real-time Debug Streaming
+- Input Validation and Memory Cleanup
 """
 
 import subprocess
@@ -690,13 +695,14 @@ ALGORITHM:
   2. Filter: Identifies all indices with entPhysicalClass 'sensor(8)' or 'fan(7)'.
   
   3. Trace: For each sensor, recursively climbs the 'entPhysicalContainedIn' tree 
-     until it finds a Parent Module (Linecard, Supervisor, Fabric, FanTray, PowerSupply).
+     until it finds a Parent Module (Linecard, Supervisor, Fabric, FanTray, PowerSupply, System).
   
   4. Map: Combines the Parent Module type with its 'entPhysicalParentRelPos' (Slot ID)
-     to generate the unique Module ID.
+     to generate the unique Module ID. Note: 'System' is mapped to 'Chassis'.
 
 NOTES:
   - This tool is STRICTLY for Arista 7800 Series devices (7804, 7808, 7812, 7816, 7816L).
+  - The tool performs an active check for the 7800 series model and will exit if not matched.
   - RAM caching reduces 900+ sensor processing from minutes to seconds.
   - Results are grouped and separated by physical Module ID.
 
@@ -722,7 +728,7 @@ AUTHOR:
     parser.add_argument(
         "-d", "--debug", 
         action="store_true", 
-        help="Show raw CLI execution and parse counts."
+        help="Show real-time execution outputs and parse counts."
     )
     parser.add_argument(
         "-s", "--snmp-host", 

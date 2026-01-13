@@ -6,7 +6,7 @@ High-speed Arista EOS Sensor Tracer that maps sensor indices to their parent mod
 
 ## Features
 
-- **Strictly for Arista 7800 Series**: Optimized trace algorithm specifically for 7800 chassis architecture (7804/7808/7812/7816/7816L)
+- **Strictly for Arista 7800 Series**: Optimized trace algorithm specifically for 7800 chassis architecture (7804/7808/7812/7816/7816L). Actively enforced via model check.
 - **RAM Caching**: Bulk loads ENTITY-MIB tables into memory for fast processing
 - **Dual Mode Operation**: Works both on-device (FastCli) and remotely (SNMP)
 - **Input Validation**: Validates sensor indices before processing
@@ -88,7 +88,7 @@ python3 trace_sensor.py 12345 -s 10.0.0.1 -c public
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--all` | `-a` | Bulk map all sensors to module ID |
-| `--debug` | `-d` | Show raw CLI execution and parse counts |
+| `--debug` | `-d` | Show real-time streaming of CLI/SNMP execution and parse counts |
 | `--snmp-host` | `-s` | Remote EOS host to query via SNMP (required when not on-device) |
 | `--snmp-community` | `-c` | SNMP community string (default: `public`) |
 | `--snmp-version` | `-v` | SNMP version: `1` or `2c` (default: `2c`) |
@@ -108,9 +108,9 @@ The tracer uses a 4-step process:
 
 2. **Filter**: Identifies all indices with `entPhysicalClass` 'sensor(8)' or 'fan(7)'
 
-3. **Trace**: For each sensor, recursively climbs the `entPhysicalContainedIn` tree until it finds a Parent Module (Linecard, Supervisor, Fabric, FanTray, PowerSupply)
+3. **Trace**: For each sensor, recursively climbs the `entPhysicalContainedIn` tree until it finds a Parent Module (Linecard, Supervisor, Fabric, FanTray, PowerSupply, System)
 
-4. **Map**: Combines the Parent Module type with its `entPhysicalParentRelPos` (Slot ID) to generate the unique Module ID
+4. **Map**: Combines the Parent Module type with its `entPhysicalParentRelPos` (Slot ID) to generate the unique Module ID. ('System' type is mapped to 'Chassis' ID).
 
 ## Output Format
 
@@ -184,6 +184,11 @@ Index           | Sensor Name                                          | Module 
 
 **Error: Not running on Arista EOS environment**
 - Solution: Use `-s` flag to specify a remote SNMP host
+- Note: If using `-s`, the local environment check is bypassed.
+
+**Error: Target device is not an Arista 7800 series**
+- Cause: The tool detected a device model that is not part of the 7800 series.
+- Solution: Run this tool against an Arista 7800 series device.
 
 **Error: `snmpwalk` not found in PATH**
 - Solution: Install net-snmp client tools (see Installation section)
