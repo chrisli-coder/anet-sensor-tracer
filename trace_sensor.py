@@ -628,7 +628,7 @@ class FastTracer:
     
     def ensure_data_loaded(self):
         """Ensure SNMP data is loaded, fetching if necessary."""
-        if not self.names:
+        if self.names is None or not self.names:
             self.fetch_data_via_fastcli()
         elif self.debug:
             print("[Info] Using existing RAM cache (Remote/Pre-loaded)...")
@@ -800,7 +800,7 @@ def main():
     target_host = args.snmp_host if is_remote else "localhost"
     
     if args.debug:
-         print(f"[DEBUG] Checking if target is Arista 7800 series (Remote={is_remote})...")
+        print(f"[DEBUG] Checking if target is Arista 7800 series (Remote={is_remote})...")
 
     if not tracer.check_model_compatibility(is_remote=is_remote, host=target_host):
         print("❌ Error: Target device is not an Arista 7800 series.")

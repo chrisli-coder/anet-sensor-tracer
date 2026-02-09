@@ -17,16 +17,16 @@ High-speed Arista EOS Sensor Tracer that maps sensor indices to their parent mod
 
 ### On-Device Mode (EOS)
 - Arista EOS device (7800 Series) with `FastCli` available
-- Python 3.x
+- Python 3.6 or higher
 
 ### Remote Mode (SNMP)
 - `snmpwalk` command-line tool (from net-snmp package)
-- Python 3.x
+- Python 3.6 or higher
 - Network access to target EOS device (7800 Series)
 
 ## Installation
 
-No installation required. Simply ensure Python 3.x is available and (for remote mode) `snmpwalk` is in your PATH.
+No installation required. Simply ensure Python 3.6+ is available and (for remote mode) `snmpwalk` is in your PATH.
 
 ```bash
 # Install net-snmp tools (for remote mode on Linux/macOS)
@@ -58,8 +58,6 @@ python3 trace_sensor.py 12345
 ```bash
 python3 trace_sensor.py -a -d
 ```
-
-### Remote SNMP Mode
 
 ### Remote SNMP Mode
 
@@ -203,6 +201,16 @@ Index           | Sensor Name                                          | Module 
 - Verify SNMP access to ENTITY-MIB
 - Check that sensors exist on the device
 - Use `-d` flag for debug output
+
+## Exit Codes
+
+The tool uses the following exit codes to indicate different error conditions:
+
+- `0`: Success
+- `1`: Invalid index argument (non-numeric)
+- `2`: Not running on Arista EOS environment (FastCli not available)
+- `3`: Failed to fetch SNMP data from remote host
+- `4`: Target device is not an Arista 7800 series
 
 ## Author
 
